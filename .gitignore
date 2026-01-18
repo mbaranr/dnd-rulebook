@@ -4,3 +4,5 @@ __pycache__/
 data/intermediate/
 data/extracted/
 data/embeddings/
+data/processed/
+data/index

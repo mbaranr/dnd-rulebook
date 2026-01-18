@@ -4,25 +4,13 @@ import fitz
 from PIL import Image
 
 
-DEFAULT_DPI = 300
-
-
 def render_pdf_pages(
     pdf_path: Path,
     out_dir: Path,
-    dpi: int = DEFAULT_DPI,
+    dpi: int = 300,
 ) -> Iterator[Dict]:
     """
     Render each page of a PDF to a PNG image.
-
-    Yields metadata per page:
-    {
-        "page_index": int,
-        "width": int,
-        "height": int,
-        "dpi": int,
-        "image_path": Path
-    }
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,6 +19,18 @@ def render_pdf_pages(
 
     with fitz.open(pdf_path) as doc:
         for page_index in range(doc.page_count):
+            image_path = out_dir / f"page_{page_index+1:04d}.png"
+
+            if image_path.exists():
+                yield {
+                    "page_index": page_index,
+                    "width": None,
+                    "height": None,
+                    "dpi": dpi,
+                    "image_path": image_path,
+                }
+                continue
+
             page = doc[page_index]
 
             pix = page.get_pixmap(matrix=matrix, alpha=False)
@@ -41,7 +41,6 @@ def render_pdf_pages(
                 pix.samples
             )
 
-            image_path = out_dir / f"page_{page_index + 1:04d}.png"
             img.save(image_path, format="PNG", optimize=True)
 
             yield {
