@@ -1,0 +1,23 @@
+name: dnd-rulebook
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - pip
+  - jupyter
+  - ipykernel
+  - notebook
+  - pillow
+  - opencv
+  - numpy
+  - pytorch
+  - transformers
+  - matplotlib
+  - huggingface_hub
+  - python-dotenv
+  - tqdm
+  - pip:
+    - pymupdf
+    - paddleocr
+    - paddlepaddle

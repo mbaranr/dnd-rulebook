@@ -12,18 +12,16 @@ from utils.geometry import intersects
 TOC_LINE_RE = re.compile(r"^(?P<title>.+?)\.{2,}\s*(?P<page>\d+)$")
 DOT_LEADER_RE = re.compile(r"\.{2,}\s*$")
 
-# ---------------------------------------------------------------------
-# Core extraction
-# ---------------------------------------------------------------------
 
 def parse_toc_page(
     pdf_path: Path,
     img_path: Path,
     toc_page: int,
-    num_columns: int,
-) -> List[Dict]:
+    num_columns: int
+):
     """
     Extract raw TOC entries from a single TOC page.
+    Page numbers are used only as sanity guards.
     """
 
     ocr = PyMuPDFPageOCR()
@@ -39,8 +37,7 @@ def parse_toc_page(
 
     ordered_ocr = [ocr_regions[i] for i in reading_order]
 
-    # Keep only OCR inside detected TOC/content area
-    filtered_ocr = []
+    filtered_ocr: List[Dict] = []
     for ocr_region in ordered_ocr:
         for lr in layout_regions:
             if lr.get("label") == "content" and intersects(
@@ -49,7 +46,7 @@ def parse_toc_page(
                 filtered_ocr.append(ocr_region)
                 break
 
-    # Font size → hierarchy level
+    # font size defines hierarchy
     font_sizes = sorted(
         {ocr["size"] for ocr in filtered_ocr},
         reverse=True,
@@ -61,9 +58,16 @@ def parse_toc_page(
     for ocr in filtered_ocr:
         raw_text = ocr["text"].strip()
         text = DOT_LEADER_RE.sub("", raw_text).rstrip()
-        
+
         level = font_to_level[ocr["size"]]
 
+        # isolated page number line
+        if text.isdigit():
+            if entries and entries[-1]["page_start"] is None:
+                entries[-1]["page_start"] = int(text)
+            continue
+
+        # normal toc line
         match = TOC_LINE_RE.match(text)
         if match:
             title = match.group("title").strip()
@@ -82,12 +86,7 @@ def parse_toc_page(
 
     return entries
 
-
-# ---------------------------------------------------------------------
-# Tree construction
-# ---------------------------------------------------------------------
-
-def build_toc_tree(entries: List[Dict]) -> List[Dict]:
+def build_toc_tree(entries: List[Dict]):
     """
     Convert flat TOC entries into a hierarchical tree.
     """
@@ -99,7 +98,6 @@ def build_toc_tree(entries: List[Dict]) -> List[Dict]:
         node = {
             "title": e["title"],
             "page_start": e["page_start"],
-            "page_end": None,
             "level": e["level"],
             "children": [],
         }
@@ -116,63 +114,26 @@ def build_toc_tree(entries: List[Dict]) -> List[Dict]:
 
     return roots
 
-
-# ---------------------------------------------------------------------
-# Page range resolution
-# ---------------------------------------------------------------------
-
-def compute_page_ranges(
-    nodes: List[Dict],
-    last_page: int,
-) -> None:
+def propagate_page_starts(nodes: List[Dict]):
     """
-    Mutates the tree in place.
-    Rule:
-    - If a node has no page_start, duplicate it from its immediate child.
+    Ensure every structural node has a page_start by inheriting
+    from its immediate first child when missing.
     """
 
-    def fill_missing_starts(items: List[Dict]):
-        for node in items:
-            if node["children"]:
-                fill_missing_starts(node["children"])
-                if node["page_start"] is None:
-                    # duplicate from immediate first child
-                    node["page_start"] = node["children"][0]["page_start"]
-
-    def assign_ends(siblings: List[Dict], inherited_end: int):
-        for i, node in enumerate(siblings):
-            next_node = siblings[i + 1] if i + 1 < len(siblings) else None
-
+    for node in nodes:
+        if node["children"]:
+            propagate_page_starts(node["children"])
             if node["page_start"] is None:
-                # should only happen for leaf nodes with no page info
-                node["page_end"] = inherited_end
-            elif next_node and next_node["page_start"] is not None:
-                node["page_end"] = max(
-                    node["page_start"],
-                    next_node["page_start"] - 1,
-                )
-            else:
-                node["page_end"] = inherited_end
+                node["page_start"] = node["children"][0]["page_start"]
 
-            if node["children"]:
-                assign_ends(node["children"], node["page_end"])
-
-    fill_missing_starts(nodes)
-    assign_ends(nodes, last_page)
-
-
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
 
 def extract_toc(
     pdf_path: Path,
     img_path: Path,
     toc_page: int = 2,
     num_columns: int = 2,
-    last_page: Optional[int] = None,
-    out_path: Optional[Path] = None,
-) -> List[Dict]:
+    out_path: Optional[Path] = None
+):
     """
     Public TOC extraction API.
     """
@@ -185,13 +146,11 @@ def extract_toc(
     )
 
     tree = build_toc_tree(entries)
-
-    if last_page is not None:
-        compute_page_ranges(tree, last_page)
+    propagate_page_starts(tree)
 
     if out_path is not None:
         out_path = out_path / "toc.json"
-        with open(out_path, "w", encoding="utf-8") as f:
+        with out_path.open("w", encoding="utf-8") as f:
             json.dump(tree, f, indent=2, ensure_ascii=False)
 
     return tree

@@ -96,7 +96,7 @@ class LayoutReader:
         return parse_logits(logits, len(boxes))
 
 
-def heuristic_reading_order(ocr_regions: List[Dict], num_columns: int = 1):
+def heuristic_reading_order(ocr_regions: List[Dict], num_columns: int = 2):
     """
     Deterministic reading order.
 

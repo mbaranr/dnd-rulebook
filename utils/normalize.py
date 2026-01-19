@@ -4,7 +4,7 @@ import unicodedata
 
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
-HYPHEN_LINEBREAK_RE = re.compile(r"(\w+)-\n([a-z])")
+HYPHEN_LINEBREAK_RE = re.compile(r"(\w+)-\s+([a-z])")
 
 BULLET_RE = re.compile(r"[•◦∙·‣▪▫–—]")
 
@@ -45,8 +45,8 @@ def normalize_bullets(text: str) -> str:
 
 def fix_hyphenated_linebreaks(text: str) -> str:
     """
-    Merge hyphenated line breaks:
-        cit-\nies -> cities
+    Merge hyphenated OCR breaks:
+        cit- ies -> cities
 
     Only merges when the continuation starts with lowercase.
     """
@@ -67,14 +67,6 @@ def normalize_whitespace(text: str) -> str:
 
 
 def normalize_text(text: str) -> str:
-    """
-    Normalize text for embedding:
-      - removes control chars
-      - normalizes unicode punctuation
-      - normalizes bullet symbols
-      - fixes hyphenated line breaks
-      - normalizes whitespace
-    """
     if not text:
         return text
 
@@ -85,3 +77,21 @@ def normalize_text(text: str) -> str:
     text = normalize_whitespace(text)
 
     return text
+
+def normalize_title(text: str) -> str:
+    """
+    Normalize titles for matching.
+    """
+    text = text.lower()
+
+    # normalize chapter variants
+    text = re.sub(r"\bchapter\b", "ch", text)
+    text = re.sub(r"\bch\.\b", "ch", text)
+
+    # remove punctuation
+    text = re.sub(r"[^\w\s]", "", text)
+
+    # normalize whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()

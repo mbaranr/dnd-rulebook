@@ -1,159 +1,136 @@
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional
 import json
 
-from utils.normalize import normalize_text
-from blocks.assemble import Block
+from utils.normalize import normalize_text, normalize_title
 
 
-def flatten_toc(
-    toc: List[Dict[str, Any]],
-    path: List[str] | None = None,
-) -> List[Tuple[str, int]]:
+def flatten_toc(toc: List[Dict[str, Any]]):
     """
-    Flatten TOC tree into a list of (title, level) entries
-    in document order.
+    Flatten hierarchical TOC into a linear list, preserving paths.
     """
-    path = path or []
-    flat: List[Tuple[str, int]] = []
+    flat: List[Dict[str, Any]] = []
 
-    for node in toc:
-        title = node["title"]
-        level = node["level"]
-        flat.append((title, level))
+    def walk(nodes: List[Dict[str, Any]], path: List[str]):
+        for n in nodes:
+            current_path = path + [n["title"]]
+            flat.append(
+                {
+                    "title": n["title"],
+                    "page_start": n.get("page_start"),
+                    "level": n.get("level"),
+                    "path": current_path,
+                }
+            )
+            if n.get("children"):
+                walk(n["children"], current_path)
 
-        if node.get("children"):
-            flat.extend(flatten_toc(node["children"], path + [title]))
-
+    walk(toc, [])
     return flat
 
-def normalize_title(text: str) -> str:
+def match_toc_entry(block, toc_entries):
     """
-    Normalize titles for matching:
+    Strict title match + page sanity check.
+    Returns the matched TOC entry or None.
     """
-    text = text.lower()
-    text = re.sub(r"[^\w\s]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    block_title = block.get("title")
+    block_page = block.get("page")
 
-def titles_match(block_title: str, toc_title: str) -> bool:
-    """
-    Loose but deterministic title match.
-    """
+    if not block_title:
+        return None
+
     bt = normalize_title(block_title)
-    tt = normalize_title(toc_title)
 
-    return bt == tt or bt in tt or tt in bt
+    for entry in toc_entries:
+        if normalize_title(entry["title"]) != bt:
+            continue
 
+        toc_page = entry.get("page_start")
+        if toc_page is not None and block_page is not None:
+            if block_page < toc_page:
+                continue
 
-def align_blocks_to_toc(
-    blocks: List[Dict[str, Any]],
-    toc: List[Dict[str, Any]],
-) -> Dict[str, List[str]]:
-    """
-    Assign section_path to each block based on TOC alignment.
-    """
-    toc_entries = flatten_toc(toc)
+        return entry
 
-    current_path: Dict[int, str] = {}
-    block_to_path: Dict[str, List[str]] = {}
-
-    for block in blocks:
-        title = block.get("title")
-
-        if title:
-            for toc_title, level in toc_entries:
-                if titles_match(title, toc_title):
-                    # truncate deeper levels
-                    current_path = {
-                        k: v for k, v in current_path.items()
-                        if k < level
-                    }
-                    current_path[level] = toc_title
-                    break
-
-        # build ordered section path
-        section_path = [
-            current_path[k]
-            for k in sorted(current_path)
-        ]
-
-        block_to_path[block["block_id"]] = section_path
-
-    return block_to_path
-
-
-def block_to_dict(
-    block: Block,
-    section_path: List[str] | None = None,
-) -> Dict[str, Any]:
-    """
-    Convert a Block dataclass into a JSON-serializable dict.
-    """
-    data: Dict[str, Any] = {
-        "block_id": block.block_id,
-        "page": block.page,
-        "type": block.type,
-        "section_path": section_path or [],
-    }
-
-    if block.title:
-        data["title"] = block.title
-
-    if block.type == "text":
-        data["text"] = normalize_text(block.text or "")
-
-    if block.type == "table":
-        data["image"] = block.image_crop
-
-    return data
+    return None
 
 
 def serialize_blocks(
-    blocks: List[Block],
+    blocks: List[Dict[str, Any]],
     out_path: Path,
-    toc: List[Dict[str, Any]] | None = None,
+    toc: Optional[List[Dict[str, Any]]] = None,
+    pages_to_skip: Optional[List[int]] = None,
 ):
     """
-    Serialize blocks into blocks.json and tables.json.
+    Serialize blocks into text_blocks.json and table_blocks.json.
     """
+
     out_path.mkdir(parents=True, exist_ok=True)
+    pages_to_skip = set(pages_to_skip or [])
 
-    text_blocks: List[Dict] = []
-    table_blocks: List[Dict] = []
+    toc_entries: List[Dict[str, Any]] = []
+    if toc:
+        toc_entries = flatten_toc(toc)
 
-    section_paths = None
-    if toc is not None:
-        section_paths = align_blocks_to_toc(blocks, toc)
+    # global ordering first (page-local order_id)
+    blocks = sorted(blocks, key=lambda b: (b["page"], b["order_id"]))
+
+    text_blocks: List[Dict[str, Any]] = []
+    table_blocks: List[Dict[str, Any]] = []
+
+    current_toc_path: List[str] = []
+    last_text_block_with_title: Optional[Dict[str, Any]] = None
 
     for block in blocks:
-        section_path = None
-        if section_paths is not None:
-            section_path = section_paths.get(block.block_id)
+        page = block.get("page")
+        if page in pages_to_skip:
+            continue
 
-        data = block_to_dict(
-            block=block,
-            section_path=section_path,
-        )
+        # toc state update
+        if toc_entries:
+            matched_entry = match_toc_entry(block, toc_entries)
+            if matched_entry:
+                current_toc_path = matched_entry["path"]
 
-        if block.type == "text":
-            text_blocks.append(data)
-        elif block.type == "table":
-            table_blocks.append(data)
+        # text blocks
+        if block["type"] == "text":
+            text = normalize_text(block.get("text", ""))
 
-    # write text blocks
-    blocks_path = out_dir / "blocks.json"
-    with blocks_path.open("w", encoding="utf-8") as f:
+            if not block.get("title") and last_text_block_with_title:
+                # merge into previous titled block
+                last_text_block_with_title["text"] += "\n\n" + text
+                continue
+
+            block_out = {
+                "block_id": block["block_id"],
+                "page": page,
+                "order_id": block["order_id"],
+                "title": block.get("title"),
+                "toc": current_toc_path.copy(),
+                "text": text,
+            }
+
+            text_blocks.append(block_out)
+
+            if block.get("title"):
+                last_text_block_with_title = block_out
+
+        # table blocks
+        elif block["type"] == "table":
+            block_out = {
+                "block_id": block["block_id"],
+                "page": page,
+                "order_id": block["order_id"],
+                "title": block.get("title"),
+                "toc": current_toc_path.copy(),
+                "image_crop": block.get("image_crop"),
+            }
+            table_blocks.append(block_out)
+
+    with (out_path / "text_blocks.json").open("w", encoding="utf-8") as f:
         json.dump(text_blocks, f, indent=2, ensure_ascii=False)
 
-    # write tables
-    tables_path = out_dir / "tables.json"
-    with tables_path.open("w", encoding="utf-8") as f:
+    with (out_path / "table_blocks.json").open("w", encoding="utf-8") as f:
         json.dump(table_blocks, f, indent=2, ensure_ascii=False)
 
-    return {
-        "blocks": blocks_path,
-        "tables": tables_path,
-        "num_text_blocks": len(text_blocks),
-        "num_tables": len(table_blocks),
-    }
+    return text_blocks, table_blocks
